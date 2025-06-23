@@ -519,7 +519,8 @@ class OmniGen2Pipeline(DiffusionPipeline):
         return_dict: bool = True,
         verbose: bool = False,
         step_func=None,
-        system_prompt = "You are a helpful assistant that generates high-quality images based on user instructions."
+        system_prompt = "You are a helpful assistant that generates high-quality images based on user instructions.",
+        preview_callback=None
     ):
 
         height = height or self.default_sample_size * self.vae_scale_factor
@@ -624,6 +625,7 @@ class OmniGen2Pipeline(DiffusionPipeline):
             dtype=dtype,
             verbose=verbose,
             step_func=step_func,
+            preview_callback=preview_callback
         )
 
         image = F.interpolate(image, size=(ori_height, ori_width), mode='bilinear')
@@ -652,7 +654,8 @@ class OmniGen2Pipeline(DiffusionPipeline):
         device,
         dtype,
         verbose,
-        step_func=None
+        step_func=None,
+        preview_callback=None
     ):
         batch_size = latents.shape[0]
 
@@ -668,6 +671,8 @@ class OmniGen2Pipeline(DiffusionPipeline):
         
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
+                if self.interrupt:
+                    break
                 model_pred = self.predict(
                     t=t,
                     latents=latents,
@@ -720,6 +725,9 @@ class OmniGen2Pipeline(DiffusionPipeline):
 
                 if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
                     progress_bar.update()
+
+                if preview_callback:
+                    preview_callback(i, latents)
                 
                 if step_func is not None:
                     step_func(i, self._num_timesteps)

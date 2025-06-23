@@ -8,6 +8,7 @@ import os
 import argparse
 import random
 from datetime import datetime
+from PIL import Image
 
 import torch
 from torchvision.transforms.functional import to_pil_image, to_tensor
@@ -28,6 +29,8 @@ model_cache_dir = f"{ROOT_DIR}/weights"
 pipeline = None
 accelerator = None
 save_images = False
+preview_image = None
+interrupt_generation = False
 
 def load_pipeline(accelerator, weight_dtype, args):
     pipeline = OmniGen2Pipeline.from_pretrained(
@@ -54,6 +57,64 @@ def load_pipeline(accelerator, weight_dtype, args):
     return pipeline
 
 
+def handle_interrupt_btn_click():
+    global interrupt_generation
+    interrupt_generation = not interrupt_generation
+    if interrupt_generation:
+        return gr.HTML(f'<span style="color:red"> Stopping generation... </span>',
+                                                visible=True)
+    else:
+        return gr.HTML("", visible=False)
+
+
+def preview_to_image(latent_image):
+        latents_ubyte = (((latent_image + 1.0) / 2.0).clamp(0, 1)  # change scale from -1..1 to 0..1
+                            .mul(0xFF)  # to 0..255
+                            ).to(device="cpu", dtype=torch.uint8)
+
+        return Image.fromarray(latents_ubyte.numpy())
+
+
+class Latent2RGBPreviewer():
+    def __init__(self, latent_rgb_factors):
+        self.latent_rgb_factors = torch.tensor(latent_rgb_factors, device="cpu")
+
+    def decode_latent_to_preview_simple(self, x0):
+        self.latent_rgb_factors = self.latent_rgb_factors.to(dtype=x0.dtype, device=x0.device)
+        latent_image = x0[0].permute(1, 2, 0) @ self.latent_rgb_factors
+        return preview_to_image(latent_image)
+
+
+def preview_callback(iteration, latents):
+    global preview_image
+    if interrupt_generation:
+        pipeline.interrupt = True
+    if iteration % 3 != 0:
+        return
+    # convert latents to image
+    # https://github.com/comfyanonymous/ComfyUI/blob/38c22e631ad090a4841e4a0f015a30c565a9f7fc/comfy/latent_formats.py
+    latent_rgb_factors =[
+            [-0.0404,  0.0159,  0.0609],
+            [ 0.0043,  0.0298,  0.0850],
+            [ 0.0328, -0.0749, -0.0503],
+            [-0.0245,  0.0085,  0.0549],
+            [ 0.0966,  0.0894,  0.0530],
+            [ 0.0035,  0.0399,  0.0123],
+            [ 0.0583,  0.1184,  0.1262],
+            [-0.0191, -0.0206, -0.0306],
+            [-0.0324,  0.0055,  0.1001],
+            [ 0.0955,  0.0659, -0.0545],
+            [-0.0504,  0.0231, -0.0013],
+            [ 0.0500, -0.0008, -0.0088],
+            [ 0.0982,  0.0941,  0.0976],
+            [-0.1233, -0.0280, -0.0897],
+            [-0.0005, -0.0530, -0.0020],
+            [-0.1273, -0.0932, -0.0680]
+        ]
+    previewer = Latent2RGBPreviewer(latent_rgb_factors)
+    preview_image = previewer.decode_latent_to_preview_simple(latents)
+
+
 def run(
     instruction,
     width_input,
@@ -75,6 +136,10 @@ def run(
     system_prompt,
     progress=gr.Progress(),
 ):
+    global interrupt_generation
+    interrupt_generation = False
+    pipeline.interrupt = False
+
     input_images = [image_input_1, image_input_2, image_input_3]
     input_images = [img for img in input_images if img is not None]
 
@@ -117,7 +182,8 @@ def run(
         generator=generator,
         output_type="pil",
         step_func=progress_callback,
-        system_prompt=system_prompt
+        system_prompt=system_prompt,
+        preview_callback=preview_callback
     )
 
     progress(1.0)
@@ -639,10 +705,12 @@ citation to be added
 def main(args):
     # Gradio
     with gr.Blocks(analytics_enabled=False) as demo:
-        gr.Markdown(
-            "# OmniGen2: Unified Image Generation [paper](https://arxiv.org/abs/2409.11340) [code](https://github.com/VectorSpaceLab/OmniGen2)"
-        )
-        gr.Markdown(description)
+        with gr.Row():
+            gr.Markdown(
+                "# OmniGen2: Unified Image Generation [paper](https://arxiv.org/abs/2409.11340) [code](https://github.com/VectorSpaceLab/OmniGen2)"
+            )
+            gr.Markdown(description)
+            preview_image_element = gr.Image(value=lambda: preview_image, every=1, width=256, height=256, interactive=False, label="Preview")
         with gr.Row():
             with gr.Column():
                 with gr.Accordion("Edit system prompt", open=False):
@@ -660,7 +728,10 @@ def main(args):
                     image_input_2 = gr.Image(label="Second Image", type="pil")
                     image_input_3 = gr.Image(label="Third Image", type="pil")
 
-                generate_button = gr.Button("Generate Image")
+                with gr.Row():
+                    interrupt_btn = gr.Button("Stop", variant="stop")
+                    generate_button = gr.Button("Generate Image")
+                interrupt_label = gr.HTML("", visible=False)
 
                 negative_prompt = gr.Textbox(
                     label="Enter your negative prompt (May cause nan error when editing images with quantization enabled)",
@@ -783,6 +854,9 @@ def main(args):
 
         pipeline = load_pipeline(accelerator, weight_dtype, args)
 
+
+        interrupt_btn.click(fn=handle_interrupt_btn_click, inputs=[], outputs=[interrupt_label], show_progress="hidden")
+
         # click
         generate_button.click(
             run,
@@ -807,7 +881,7 @@ def main(args):
                 system_prompt
             ],
             outputs=output_image,
-        )
+        ).then(lambda: gr.HTML("", visible=False), None, interrupt_label)
 
         gr.Examples(
             examples=get_example(),
