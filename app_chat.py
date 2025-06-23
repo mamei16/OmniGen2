@@ -42,6 +42,8 @@ def load_pipeline(accelerator, weight_dtype, args):
         torch_dtype=weight_dtype,
         cache_dir=model_cache_dir
     )
+    pipeline.transformer = pipeline.quantize_transformer(8)
+
     if args.enable_sequential_cpu_offload:
         pipeline.enable_sequential_cpu_offload()
     elif args.enable_model_cpu_offload:
