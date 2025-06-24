@@ -9,9 +9,13 @@ import argparse
 import random
 from datetime import datetime
 from PIL import Image
+import json
 
 import torch
 from torchvision.transforms.functional import to_pil_image, to_tensor
+
+import piexif
+import piexif.helper
 
 from accelerate import Accelerator
 
@@ -31,19 +35,22 @@ accelerator = None
 save_images = False
 preview_image = None
 interrupt_generation = False
+last_seed = -1
 
 def load_pipeline(accelerator, weight_dtype, args):
     pipeline = OmniGen2Pipeline.from_pretrained(
         args.model_path,
         torch_dtype=weight_dtype,
         trust_remote_code=True,
-        cache_dir=model_cache_dir
+        cache_dir=model_cache_dir,
+        local_files_only=True
     )
     pipeline.transformer = OmniGen2Transformer2DModel.from_pretrained(
         args.model_path,
         subfolder="transformer",
         torch_dtype=weight_dtype,
-        cache_dir=model_cache_dir
+        cache_dir=model_cache_dir,
+        local_files_only=True
     )
     pipeline.transformer = pipeline.quantize_transformer(8)
     #pipeline.mllm = pipeline.quantize_mllm(8)
@@ -136,7 +143,7 @@ def run(
     system_prompt,
     progress=gr.Progress(),
 ):
-    global interrupt_generation
+    global interrupt_generation, last_seed
     interrupt_generation = False
     pipeline.interrupt = False
 
@@ -148,6 +155,7 @@ def run(
 
     if seed_input == -1:
         seed_input = random.randint(0, 2**16 - 1)
+    last_seed = seed_input
 
     generator = torch.Generator(device=accelerator.device).manual_seed(seed_input)
 
@@ -204,11 +212,28 @@ def run(
         # Save the image
         output_image.save(output_path)
 
+        geninfo = json.dumps({"prompt": instruction,
+                   "negative_prompt": negative_prompt,
+                   "num_inference_steps": num_inference_steps,
+                   "text_guidance_scale": guidance_scale_input,
+                   "image_guidance_scale": img_guidance_scale_input,
+                   "seed": last_seed,
+                   "cfg_range": [cfg_range_start, cfg_range_end],
+                   "system_prompt": system_prompt})
+        exif_bytes = piexif.dump({
+                "Exif": {
+                    piexif.ExifIFD.UserComment: piexif.helper.UserComment.dump(geninfo or "", encoding="unicode")
+                },
+                })
+        piexif.insert(exif_bytes, output_path)
+
         # Save All Generated Images
         if len(results.images) > 1:
             for i, image in enumerate(results.images):
                 image_name, ext = os.path.splitext(output_path)
                 image.save(f"{image_name}_{i}{ext}")
+
+                piexif.insert(exif_bytes, f"{image_name}_{i}{ext}")
     return output_image
 
 
@@ -689,17 +714,19 @@ def run_for_examples(
     )
 
 description = """
-### 💡 Quick Tips for Best Results (see our [github](https://github.com/VectorSpaceLab/OmniGen2?tab=readme-ov-file#-usage-tips) for more details)
+#### 💡 Quick Tips for Best Results (see our [github](https://github.com/VectorSpaceLab/OmniGen2?tab=readme-ov-file#-usage-tips) for more details)
 - Image Quality: Use high-resolution images (at least 512x512 recommended).
 - Be Specific: Instead of "Add bird to desk", try "Add the bird from image 1 to the desk in image 2".
 - Use English: English prompts currently yield better results.
 - Adjust image_guidance_scale for better consistency with the reference image:
     - Image Editing: 1.3 - 2.0
     - In-context Generation: 2.0 - 3.0
+- `cfg_range_start`, `cfg_range_end`:
+  Define the timestep range where CFG is applied. Per [this paper](https://arxiv.org/abs/2404.07724), reducing `cfg_range_end` can significantly decrease inference time with a negligible impact on quality.
 """
 
 article = """
-citation to be added
+[Technical Report](https://arxiv.org/abs/2506.18871)
 """
 
 def main(args):
@@ -749,7 +776,7 @@ def main(args):
                     )
                 with gr.Row(equal_height=True):
                     text_guidance_scale_input = gr.Slider(
-                        label="Text Guidance Scale",
+                        label="Text Guidance Scale (CFG)",
                         minimum=1.0,
                         maximum=8.0,
                         value=5.0,
@@ -759,25 +786,27 @@ def main(args):
                     image_guidance_scale_input = gr.Slider(
                         label="Image Guidance Scale",
                         minimum=1.0,
-                        maximum=3.0,
+                        maximum=6.0,
                         value=2.0,
                         step=0.1,
                     )
                 with gr.Row(equal_height=True):
                     cfg_range_start = gr.Slider(
                         label="CFG Range Start",
+                        info="Best quality: 0.2 | Best trade-off when image editing: 0.05",
                         minimum=0.0,
                         maximum=1.0,
-                        value=0.0,
-                        step=0.1,
+                        value=0.05,
+                        step=0.05,
                     )
 
                     cfg_range_end = gr.Slider(
                         label="CFG Range End",
+
                         minimum=0.0,
                         maximum=1.0,
-                        value=1.0,
-                        step=0.1,
+                        value=0.8,
+                        step=0.05,
                     )
                 
                 def adjust_end_slider(start_val, end_val):
@@ -807,7 +836,7 @@ def main(args):
                     )
 
                     num_inference_steps = gr.Slider(
-                        label="Inference Steps", minimum=5, maximum=100, value=50, step=1
+                        label="Inference Steps", minimum=5, maximum=100, value=35, step=1
                     )
                 with gr.Row(equal_height=True):
                     num_images_per_prompt = gr.Slider(
@@ -817,10 +846,11 @@ def main(args):
                         value=1,
                         step=1,
                     )
-
-                    seed_input = gr.Slider(
-                        label="Seed", minimum=-1, maximum=2147483647, value=-1, step=1
-                    )
+                    with gr.Column():
+                        seed_input = gr.Slider(
+                            label="Seed", minimum=-1, maximum=2147483647, value=-1, step=1
+                        )
+                        reuse_seed = gr.Button("Re-use seed")
                 with gr.Row(equal_height=True):
                     max_input_image_side_length = gr.Slider(
                         label="max_input_image_side_length",
@@ -856,6 +886,7 @@ def main(args):
 
 
         interrupt_btn.click(fn=handle_interrupt_btn_click, inputs=[], outputs=[interrupt_label], show_progress="hidden")
+        reuse_seed.click(lambda: last_seed, None, seed_input)
 
         # click
         generate_button.click(
