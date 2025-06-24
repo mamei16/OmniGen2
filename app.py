@@ -779,7 +779,7 @@ def main(args):
                         label="Text Guidance Scale (CFG)",
                         minimum=1.0,
                         maximum=8.0,
-                        value=5.0,
+                        value=4.0,
                         step=0.1,
                     )
 
