@@ -43,14 +43,16 @@ def load_pipeline(accelerator, weight_dtype, args):
         torch_dtype=weight_dtype,
         trust_remote_code=True,
         cache_dir=model_cache_dir,
-        local_files_only=True
+        local_files_only=True,
+        revision="ecd51a80bb166c867433b38f039d1e3cf620ff21"
     )
     pipeline.transformer = OmniGen2Transformer2DModel.from_pretrained(
         args.model_path,
         subfolder="transformer",
         torch_dtype=weight_dtype,
         cache_dir=model_cache_dir,
-        local_files_only=True
+        local_files_only=True,
+        revision="ecd51a80bb166c867433b38f039d1e3cf620ff21"
     )
     pipeline.transformer = pipeline.quantize_transformer(8)
     #pipeline.mllm = pipeline.quantize_mllm(8)
