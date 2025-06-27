@@ -24,6 +24,7 @@ from omnigen2.models.transformers.transformer_omnigen2 import OmniGen2Transforme
 from omnigen2.schedulers.scheduling_flow_match_euler_discrete import FlowMatchEulerDiscreteScheduler
 from omnigen2.schedulers.scheduling_dpmsolver_multistep import DPMSolverMultistepScheduler
 from omnigen2.utils.img_util import create_collage
+from omnigen2.group_offloading import apply_group_offloading
 
 NEGATIVE_PROMPT = "" #"(((deformed))), blurry, over saturation, bad anatomy, disfigured, poorly drawn face, mutation, mutated, (extra_limb), (ugly), (poorly drawn hands), fused fingers, messy drawing, broken legs censor, censored, censor_bar"
 
@@ -57,6 +58,9 @@ def load_pipeline(accelerator, weight_dtype, args):
     pipeline.transformer = pipeline.quantize_transformer(8)
     #pipeline.mllm = pipeline.quantize_mllm(8)
     #pipeline.vae.to(torch.float32)
+    if args.enable_group_offload:
+        apply_group_offloading(pipeline.transformer, onload_device=accelerator.device, offload_type="leaf_level", num_blocks_per_group=1,
+                               low_cpu_mem_usage=False, use_stream=True)
     if args.enable_sequential_cpu_offload:
         pipeline.enable_sequential_cpu_offload()
     elif args.enable_model_cpu_offload:
@@ -96,6 +100,9 @@ class Latent2RGBPreviewer():
 
 def preview_callback(iteration, latents):
     global preview_image
+    if latents.isnan().any():
+        gr.Warning("Latents contain nan. Stopping generation...")
+        pipeline.interrupt = True
     if interrupt_generation:
         pipeline.interrupt = True
     if iteration % 3 != 0:
@@ -201,7 +208,7 @@ def run(
     vis_images = [to_tensor(image) * 2 - 1 for image in results.images]
     output_image = create_collage(vis_images)
 
-    if save_images:
+    if save_images and not pipeline.interrupt:
         # Create outputs directory if it doesn't exist
         output_dir = os.path.join(ROOT_DIR, "outputs_gradio")
         os.makedirs(output_dir, exist_ok=True)
@@ -968,6 +975,10 @@ def parse_args():
         action="store_true",
         help="Enable sequential CPU offload."
     )
+    parser.add_argument(
+        "--enable_group_offload",
+        action="store_true",
+        help="Apply group offloading to Qwen2.5vl, DiT, and VAE to save VRAM. May require more RAM or swap to run")
     args = parser.parse_args()
     return args
 

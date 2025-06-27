@@ -597,8 +597,6 @@ class OmniGen2Transformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, From
             else:
                 hidden_states = layer(hidden_states, attention_mask, rotary_emb, temb)
 
-        if hidden_states.isnan().any():
-            raise ValueError("'hidden_states' contains nan")
 
         # 4. Output norm & projection
         hidden_states = self.norm_out(hidden_states, temb)
