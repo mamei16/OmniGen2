@@ -56,17 +56,19 @@ def load_pipeline(accelerator, weight_dtype, args):
         revision="ecd51a80bb166c867433b38f039d1e3cf620ff21"
     )
     pipeline.transformer = pipeline.quantize_transformer(8)
-    #pipeline.mllm = pipeline.quantize_mllm(8)
-    #pipeline.vae.to(torch.float32)
     if args.enable_group_offload:
         apply_group_offloading(pipeline.transformer, onload_device=accelerator.device, offload_type="leaf_level", num_blocks_per_group=1,
                                low_cpu_mem_usage=False, use_stream=True)
-    if args.enable_sequential_cpu_offload:
-        pipeline.enable_sequential_cpu_offload()
+        pipeline.manual_cpu_offload = True
     elif args.enable_model_cpu_offload:
         pipeline.enable_model_cpu_offload()
+        pipeline.manual_cpu_offload = False
+    elif args.enable_sequential_cpu_offload:
+        pipeline.enable_sequential_cpu_offload()
+        pipeline.manual_cpu_offload = False
     else:
         pipeline = pipeline.to(accelerator.device)
+        pipeline.manual_cpu_offload = False
     return pipeline
 
 

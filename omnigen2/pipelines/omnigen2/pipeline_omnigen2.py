@@ -540,7 +540,11 @@ class OmniGen2Pipeline(DiffusionPipeline):
         else:
             batch_size = prompt_embeds.shape[0]
 
-        device = self._execution_device
+        if self.manual_cpu_offload:  # using group offloading
+            self.mllm.to("cuda")
+            device = torch.device("cuda")
+        else:
+            device = self._execution_device
 
         # 3. Encode input prompt
         (
@@ -560,9 +564,13 @@ class OmniGen2Pipeline(DiffusionPipeline):
             negative_prompt_attention_mask=negative_prompt_attention_mask,
             max_sequence_length=max_sequence_length,
         )
-
+        if self.manual_cpu_offload:
+            self.mllm.to("cpu")
+            torch.cuda.empty_cache()
         dtype = self.transformer.dtype
         self.vae.to(dtype)
+        if self.manual_cpu_offload:
+            self.vae.to("cuda")
         # 3. Prepare control image
         ref_latents = self.prepare_image(
             images=input_images,
@@ -573,6 +581,8 @@ class OmniGen2Pipeline(DiffusionPipeline):
             device=device,
             dtype=dtype,
         )
+        if self.manual_cpu_offload:
+            self.vae.to("cpu")
 
         if input_images is None:
             input_images = []
@@ -743,8 +753,13 @@ class OmniGen2Pipeline(DiffusionPipeline):
         if not self.vae.dtype == torch.float32:
             self.vae.to(torch.float32)
 
+        if self.manual_cpu_offload:
+            self.vae.to("cuda")
+
         image = self.vae.decode(latents, return_dict=False)[0]
-        
+
+        if self.manual_cpu_offload:
+            self.vae.to("cpu")
         return image
 
     def predict(
@@ -762,8 +777,8 @@ class OmniGen2Pipeline(DiffusionPipeline):
         batch_size, num_channels_latents, height, width = latents.shape
         
         optional_kwargs = {}
-        if 'ref_image_hidden_states' in set(inspect.signature(self.transformer.forward).parameters.keys()):
-            optional_kwargs['ref_image_hidden_states'] = ref_image_hidden_states
+        #if 'ref_image_hidden_states' in set(inspect.signature(self.transformer.forward).parameters.keys()):
+        #    optional_kwargs['ref_image_hidden_states'] = ref_image_hidden_states
         
         model_pred = self.transformer(
             latents,
@@ -771,6 +786,7 @@ class OmniGen2Pipeline(DiffusionPipeline):
             prompt_embeds,
             freqs_cis,
             prompt_attention_mask,
+            ref_image_hidden_states,
             **optional_kwargs
         )
         return model_pred

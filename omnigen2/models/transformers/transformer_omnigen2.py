@@ -502,7 +502,7 @@ class OmniGen2Transformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, From
         text_hidden_states: torch.Tensor,
         freqs_cis: torch.Tensor,
         text_attention_mask: torch.Tensor,
-        ref_image_hidden_states: Optional[List[List[torch.Tensor]]] = None,
+        ref_image_hidden_states: Optional[List[List[torch.Tensor]]],
         attention_kwargs: Optional[Dict[str, Any]] = None,
         return_dict: bool = False,
     ) -> Union[torch.Tensor, Transformer2DModelOutput]:
